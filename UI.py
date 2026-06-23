@@ -1,135 +1,93 @@
-import streamlit as st
+import streamlit as res_st
 import pandas as pd
 import plotly.express as px
-import time
+import sqlite3
+import requests
+import os
+import re
 
-# --------------------------------------------
-# 1. Page Configuration (ต้องอยู่บรรทัดแรกเสมอ)
-# --------------------------------------------
-st.set_page_config(
-    page_title="AI Text-to-SQL Analytics",
-    page_icon="🤖",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# 1. Page Configuration
+res_st.set_page_config(page_title="AI Text-to-SQL Analytics", page_icon="🤖", layout="wide")
 
-# --------------------------------------------
-# 2. Mockup Data (ใช้สำหรับโชว์ Demo ระหว่างรอต่อ API จริง)
-# --------------------------------------------
-def generate_mock_data():
-    return pd.DataFrame({
-        "Country": ["United Kingdom", "Germany", "France", "EIRE", "Spain"],
-        "Total_Sales": [85000, 32000, 28000, 15000, 9500],
-        "Total_Orders": [120, 45, 38, 20, 12]
-    })
+# 2. ฟังก์ชันยิงไปหา Local LLM บน Kaggle ผ่าน Ngrok
+def ask_kaggle_llm(ngrok_url, system_prompt, user_prompt):
+    if not ngrok_url: return None
+    payload = {
+        "model": "qwen2.5-coder:7b",
+        "prompt": f"{system_prompt}\n\nUser Question: {user_prompt}\nSQL Query:",
+        "stream": False,
+        "options": {"temperature": 0.0}
+    }
+    try:
+        url = ngrok_url.strip().rstrip('/')
+        endpoint = f"{url}/api/generate"
+        response = requests.post(endpoint, json=payload, timeout=45)
+        if response.status_code == 200:
+            return response.json().get("response", "").strip()
+        return f"Error: API status {response.status_code}"
+    except Exception as e:
+        return f"Error: {str(e)}"
 
-# --------------------------------------------
-# 3. Sidebar: Database Schema & Setup
-# --------------------------------------------
-with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/8653/8653130.png", width=50) # ไอคอน AI Database
-    st.title("⚙️ System Config")
+# 3. ฟังก์ชันสำหรับล้าง SQL
+def clean_sql_command(raw_response):
+    # พยายามดึง SQL จาก markdown block ก่อน
+    sql_match = re.search(r"```sql\s*(.*?)\s*```", raw_response, re.DOTALL | re.IGNORECASE)
+    if sql_match: return sql_match.group(1).strip()
     
-    # ส่วนแสดง Schema ให้ User ทราบ
-    st.markdown("### 📊 Database Schema")
-    st.info("""
-    **Table: OnlineRetail**
-    * `InvoiceNo` (TEXT)
-    * `StockCode` (TEXT)
-    * `Description` (TEXT)
-    * `Quantity` (INTEGER)
-    * `InvoiceDate` (DATETIME)
-    * `UnitPrice` (REAL)
-    * `CustomerID` (TEXT)
-    * `Country` (TEXT)
-    """)
-    
-    st.markdown("---")
-    st.markdown("### 🔌 API Connection")
-    backend_url = st.text_input("Ngrok Backend URL:", value="https://your-ngrok-url.app")
-    
-    st.markdown("---")
-    st.caption("Developed by: Tontan Tipakun")
-    st.caption("Tech Stack: Streamlit, Qwen2.5-Coder, SQLite")
+    # หากไม่เจอ ให้คืนค่าข้อความที่ได้มา (คาดหวังว่าเป็น SQL เลย)
+    return raw_response.strip().replace("```", "")
 
-# --------------------------------------------
-# 4. Main Interface: Header
-# --------------------------------------------
-st.title("🤖 AI-Powered Text-to-SQL")
-st.markdown("*เปลี่ยนคำถามภาษาไทยให้เป็นคำสั่ง Database พร้อมสรุป Insight ในคลิกเดียว*")
+# 4. Sidebar Configuration
+with res_st.sidebar:
+    res_st.title("⚙️ System Config")
+    ngrok_input = res_st.text_input("Ngrok Backend URL:", placeholder="[https://xxxx.ngrok-free.app](https://xxxx.ngrok-free.app)")
+    res_st.info("ตรวจสอบว่าไฟล์ `online_retail.db` อยู่ในโฟลเดอร์เดียวกับสคริปต์")
 
-# --------------------------------------------
-# 5. Chat & Execution Interface
-# --------------------------------------------
-# สร้าง 2 คอลัมน์ (ซ้าย: แชทถามตอบ | ขวา: ผลลัพธ์กราฟและตาราง)
-col_chat, col_result = st.columns([1, 1.2], gap="large")
+# 5. Main UI
+res_st.title("🤖 AI-Powered Text-to-SQL")
 
-with col_chat:
-    st.subheader("💬 Ask Your Data")
-    
-    # กล่องข้อความแชทประวัติ
-    if "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": "สวัสดีครับ! พิมพ์คำถามเกี่ยวกับยอดขาย (Online Retail) ให้ผมช่วยเขียน SQL และวิเคราะห์ข้อมูลได้เลยครับ"}]
+if "messages" not in res_st.session_state:
+    res_st.session_state.messages = [{"role": "assistant", "content": "สวัสดีครับ! ถามข้อมูลขายได้เลย"}]
 
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+for msg in res_st.session_state.messages:
+    with res_st.chat_message(msg["role"]):
+        res_st.markdown(msg["content"])
 
-    # รับ Input จากผู้ใช้
-    user_query = st.chat_input("เช่น 'ขอดูยอดขายรวม 5 อันดับแรกแบ่งตามประเทศ'")
+if user_query := res_st.chat_input("ถามคำถามของคุณ..."):
+    if not ngrok_input:
+        res_st.warning("⚠️ กรุณากรอก Ngrok URL")
+    else:
+        res_st.session_state.messages.append({"role": "user", "content": user_query})
+        with res_st.chat_message("user"): res_st.markdown(user_query)
 
-with col_result:
-    st.subheader("📈 Automated Insights")
-    result_container = st.container()
+        # Generate SQL
+        system_prompt = "You are a SQL expert. Return ONLY valid SQLite SQL query. No explanation."
+        with res_st.spinner("🧠 Generating SQL..."):
+            raw_res = ask_kaggle_llm(ngrok_input, system_prompt, user_query)
+            sql_query = clean_sql_command(raw_res)
 
-# --------------------------------------------
-# 6. Core Execution Logic
-# --------------------------------------------
-if user_query:
-    # 6.1 แสดงคำถามผู้ใช้
-    st.session_state.messages.append({"role": "user", "content": user_query})
-    with col_chat:
-        with st.chat_message("user"):
-            st.markdown(user_query)
-
-    # 6.2 กระบวนการประมวลผล (จำลอง)
-    with col_chat:
-        with st.chat_message("assistant"):
-            with st.spinner("🧠 AI กำลังคิด SQL Query..."):
-                time.sleep(1.5) # จำลองเวลาที่ LLM รันบน Kaggle
+        # Execute
+        if not os.path.exists("online_retail.db"):
+            res_st.error("❌ ไม่พบไฟล์ฐานข้อมูล online_retail.db")
+        elif any(k in sql_query.lower() for k in ["drop", "delete", "insert", "update"]):
+            res_st.error("⚠️ ห้ามใช้คำสั่งแก้ไขฐานข้อมูล")
+        else:
+            try:
+                conn = sqlite3.connect("online_retail.db")
+                df = pd.read_sql_query(sql_query, conn)
+                conn.close()
                 
-                # จำลอง SQL ที่ได้จาก LLM
-                mock_sql = """
-                SELECT Country, SUM(Quantity * UnitPrice) as Total_Sales, COUNT(DISTINCT InvoiceNo) as Total_Orders
-                FROM OnlineRetail
-                GROUP BY Country
-                ORDER BY Total_Sales DESC
-                LIMIT 5;
-                """
-                st.markdown("**Generated SQL Query:**")
-                st.code(mock_sql, language="sql")
-                st.session_state.messages.append({"role": "assistant", "content": f"รันคำสั่ง SQL เสร็จสิ้น:\n```sql\n{mock_sql}\n```"})
-
-    # 6.3 แสดงผลลัพธ์ Dashboard
-    with result_container:
-        with st.spinner("📊 กำลังสร้าง Visualization..."):
-            time.sleep(1) # จำลองเวลาดึงข้อมูลจาก SQLite
-            df_result = generate_mock_data()
-            
-            # วาดกราฟด้วย Plotly
-            fig = px.bar(
-                df_result, 
-                x="Country", 
-                y="Total_Sales", 
-                color="Country",
-                title="Top 5 Countries by Total Sales",
-                template="plotly_dark" # บังคับให้กราฟเป็นตีมมืดเข้ากับเว็บ
-            )
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # แสดง Data Table (ซ่อนใน Expander เพื่อความสะอาดตา)
-            with st.expander("📂 ดูตารางข้อมูลดิบ (Raw Data)"):
-                st.dataframe(df_result, use_container_width=True)
-            
-            # AI Insight สรุปผล
-            st.success("💡 **AI Insight:** ยอดขายส่วนใหญ่มาจาก United Kingdom อย่างมีนัยสำคัญ โดยมีสัดส่วนสูงกว่าประเทศอันดับสอง (Germany) เกือบ 3 เท่าตัว ควรพิจารณาเจาะตลาดหรือทำแคมเปญพิเศษรักษาฐานลูกค้าใน UK เป็นอันดับแรก")
+                res_st.code(sql_query, language="sql")
+                
+                if not df.empty:
+                    st_col1, st_col2 = res_st.columns([1, 1])
+                    with st_col1:
+                        res_st.dataframe(df)
+                    with st_col2:
+                        if len(df.columns) >= 2:
+                            fig = px.bar(df, x=df.columns[0], y=df.columns[1])
+                            res_st.plotly_chart(fig, use_container_width=True)
+                else:
+                    res_st.warning("ไม่พบข้อมูล")
+            except Exception as e:
+                res_st.error(f"SQL Error: {e}")
